@@ -1178,7 +1178,7 @@ impl RendezvousServer {
         }
 
         if key.is_empty() || key == "-" || key == "_" {
-            let (pk, sk) = crate::common::gen_sk(0);
+            let (pk, sk) = mini_rust_desk_common::gen_sk(0);
             out_sk = sk;
             if !key.is_empty() {
                 key = pk;

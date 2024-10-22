@@ -14,6 +14,7 @@ fn main() -> ResultType<()> {
         -s, --serial=[NUMBER(default=0)] 'Sets configure update serial number'
         -R, --rendezvous-servers=[HOSTS] 'Sets rendezvous servers, separated by comma'
         -r, --relay-servers=[HOST] 'Sets the default relay servers, separated by comma'
+        --mask=[MASK] 'Determine if the connection comes from LAN, e.g. 192.168.0.0/16'
         -k, --key=[KEY] 'Only allow the client with the same key'",
     );
     init_args(&args, "mini_rust_desk_id_server", "Mini RustDesk ID  Server");

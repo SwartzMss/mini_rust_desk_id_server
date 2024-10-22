@@ -5,7 +5,7 @@ edition = "2021"
 
 
 [dependencies]
-mini_rust_desk_common = { git = "https://github.com/SwartzMss/mini_rust_desk_common", rev = "d5aee4b46ca59c32bac850d464f6575a02b216ab"}
+mini_rust_desk_common = { git = "https://github.com/SwartzMss/mini_rust_desk_common", rev = "284b8199b6cb86a5e91bc5e1aa3bb911c19ea253"}
 flexi_logger = { version = "0.22", features = ["async", "use_chrono_for_offset", "dont_minimize_extra_stacks"] }
 serde_derive = "1.0"
 serde = "1.0"

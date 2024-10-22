@@ -1105,7 +1105,7 @@ checksum = "6877bb514081ee2a7ff5ef9de3281f14a4dd4bceac4c09388074a6b5df8a139a"
 [[package]]
 name = "mini_rust_desk_common"
 version = "0.1.0"
-source = "git+https://github.com/SwartzMss/mini_rust_desk_common?rev=d5aee4b46ca59c32bac850d464f6575a02b216ab#d5aee4b46ca59c32bac850d464f6575a02b216ab"
+source = "git+https://github.com/SwartzMss/mini_rust_desk_common?rev=284b8199b6cb86a5e91bc5e1aa3bb911c19ea253#284b8199b6cb86a5e91bc5e1aa3bb911c19ea253"
 dependencies = [
  "anyhow",
  "bytes",

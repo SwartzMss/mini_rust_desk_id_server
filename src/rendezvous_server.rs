@@ -213,7 +213,7 @@ impl RendezvousServer {
                 }
             }
         };
-        let listen_signal = listen_signal();
+        let listen_signal = mini_rust_desk_common::listen_signal();
         tokio::select!(
             res = main_task => res,
             res = listen_signal => res,

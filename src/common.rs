@@ -1,7 +1,7 @@
 use clap::App;
 use std::time::Instant;
 use sodiumoxide::crypto::sign;
-use anyhow::{Context, Result};
+use anyhow::Context;
 use std::{
     io::prelude::*,
     io::Read,
@@ -154,9 +154,4 @@ pub fn gen_sk(wait: u64) -> (String, Option<sign::SecretKey>) {
         }
     }
     ("".to_owned(), None)
-}
-
-pub async fn listen_signal() -> Result<()> {
-    let () = std::future::pending().await;
-    unreachable!();
 }

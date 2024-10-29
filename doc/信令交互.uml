@@ -1,0 +1,28 @@
+@startuml
+
+participant Client
+participant IDServer
+
+== Client  Register UDP 21116 ==
+Client -> IDServer: RegisterPeer{id, serial}
+Client <- IDServer: RegisterPeerResponse{request_pk}
+alt request_pk is true
+    Client -> IDServer: RegisterPk{id, uuid, pk, hostname, username, platform, localaddr, version}
+    Client <- IDServer: RegisterPkResponse{result}
+end
+
+
+== Test Nat Type TCP 21116 21115 ==
+loop TestNatRequest for TCP ports 21116 and 21115
+    Client -> IDServer: TestNatRequest{serial} for TCP <port>
+    Client <- IDServer: TestNatResponse{**port**, cu {serial, rendezvous_servers}}
+    Client <- Client: set_rendezvous-servers & set_serial()
+end
+
+alt ports are the same
+    note right of Client: NAT type is ASYMMETRIC whicn need relay server
+else ports are different
+    note right of Client: NAT type is SYMMETRIC
+end
+
+@enduml

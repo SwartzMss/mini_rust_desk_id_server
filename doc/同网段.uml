@@ -1,0 +1,19 @@
+@startuml
+
+participant Client
+participant IDServer
+participant Server
+
+title Same Intranet Mode
+
+Client -> IDServer: PunchHoleRequest{id, token, nat_type, licence_key, conn_type, version} (TCP 21116)
+IDServer -> Server: FetchLocalAddr{socket_addr, relay_server} 
+IDServer <- Server: LocalAddr{socket_addr, local_addr,relay_server,id} 
+IDServer -> Client: PunchHoleResponse{socket_addr, pk, relay_server,is_local} 
+Client <- Server: SignedId{id}
+Client -> Client:create_symmetric_key_msg
+Client -> Server: PublicKey{id}
+Server ->Client :Connection::start() 
+
+
+@enduml

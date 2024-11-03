@@ -1218,6 +1218,7 @@ dependencies = [
  "bytes",
  "clap",
  "deadpool",
+ "dotenvy",
  "flexi_logger 0.22.6",
  "futures",
  "futures-util",

@@ -142,7 +142,6 @@ impl RendezvousServer {
         let mut listener = create_tcp_listener(port).await?;
         let mut listener2 = create_tcp_listener(nat_port).await?;
         let mut listener3 = create_tcp_listener(ws_port).await?;
-        let test_addr = std::env::var("TEST_HBBS").unwrap_or_default();
         if std::env::var("ALWAYS_USE_RELAY")
             .unwrap_or_default()
             .to_uppercase()
@@ -158,28 +157,6 @@ impl RendezvousServer {
                 "N"
             }
         );
-        if test_addr.to_lowercase() != "no" {
-            let test_addr = if test_addr.is_empty() {
-                listener.local_addr()?
-            } else {
-                test_addr.parse()?
-            };
-            tokio::spawn(async move {
-                if let Err(err) = test_hbbs(test_addr).await {
-                    if test_addr.is_ipv6() && test_addr.ip().is_unspecified() {
-                        let mut test_addr = test_addr;
-                        test_addr.set_ip(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
-                        if let Err(err) = test_hbbs(test_addr).await {
-                            log::error!("Failed to run hbbs test with {test_addr}: {err}");
-                            std::process::exit(1);
-                        }
-                    } else {
-                        log::error!("Failed to run hbbs test with {test_addr}: {err}");
-                        std::process::exit(1);
-                    }
-                }
-            });
-        };
         let main_task = async move {
             loop {
                 log::info!("Start");
@@ -316,9 +293,10 @@ impl RendezvousServer {
         if let Ok(msg_in) = RendezvousMessage::parse_from_bytes(bytes) {
             match msg_in.union {
                 Some(rendezvous_message::Union::RegisterPeer(rp)) => {
+                    log::info!("RegisterPeer: {:?} {:?}", &rp.id, &addr);
                     // B registered
                     if !rp.id.is_empty() {
-                        log::trace!("New peer registered: {:?} {:?}", &rp.id, &addr);
+                        log::info!("New peer registered: {:?} {:?}", &rp.id, &addr);
                         self.update_addr(rp.id, addr, socket).await?;
                         if self.inner.serial > rp.serial {
                             let mut msg_out = RendezvousMessage::new();
@@ -332,6 +310,7 @@ impl RendezvousServer {
                     }
                 }
                 Some(rendezvous_message::Union::RegisterPk(rk)) => {
+                    log::info!("RegisterPk: {:?} {:?}", &rk.id, &addr);
                     if rk.uuid.is_empty() || rk.pk.is_empty() {
                         return Ok(());
                     }
@@ -417,6 +396,7 @@ impl RendezvousServer {
                     socket.send(&msg_out, addr).await?
                 }
                 Some(rendezvous_message::Union::PunchHoleRequest(ph)) => {
+                    log::info!("PunchHoleRequest: {:?} {:?} {:?}", &ph.id, &addr, ph.nat_type);
                     if self.pm.is_in_memory(&ph.id).await {
                         self.handle_udp_punch_hole_request(addr, ph, key).await?;
                     } else {
@@ -429,9 +409,11 @@ impl RendezvousServer {
                     }
                 }
                 Some(rendezvous_message::Union::PunchHoleSent(phs)) => {
+                    log::info!("PunchHoleSent: la.id = {:?} addr = {:?} nat_type = {:?}", &phs.id, &addr, phs.nat_type);
                     self.handle_hole_sent(phs, addr, Some(socket)).await?;
                 }
                 Some(rendezvous_message::Union::LocalAddr(la)) => {
+                    log::info!("LocalAddr: la.id = {:?} addr = {:?} local_addr = {:?}", &la.id, &addr, la.local_addr);
                     self.handle_local_addr(la, addr, Some(socket)).await?;
                 }
                 Some(rendezvous_message::Union::ConfigureUpdate(mut cu)) => {
@@ -1237,43 +1219,6 @@ async fn check_relay_servers(rs0: Arc<RelayServers>, tx: Sender) {
     }
 }
 
-// temp solution to solve udp socket failure
-async fn test_hbbs(addr: SocketAddr) -> ResultType<()> {
-    let mut addr = addr;
-    if addr.ip().is_unspecified() {
-        addr.set_ip(if addr.is_ipv4() {
-            IpAddr::V4(Ipv4Addr::LOCALHOST)
-        } else {
-            IpAddr::V6(Ipv6Addr::LOCALHOST)
-        });
-    }
-
-    let mut socket = FramedSocket::new(mini_rust_desk_common::get_any_listen_addr(addr.is_ipv4())).await?;
-    let mut msg_out = RendezvousMessage::new();
-    msg_out.set_register_peer(RegisterPeer {
-        id: "(:test_hbbs:)".to_owned(),
-        ..Default::default()
-    });
-    let mut last_time_recv = Instant::now();
-
-    let mut timer = interval(Duration::from_secs(1));
-    loop {
-        tokio::select! {
-          _ = timer.tick() => {
-              if last_time_recv.elapsed().as_secs() > 12 {
-                  bail!("Timeout of test_hbbs");
-              }
-              socket.send(&msg_out, addr).await?;
-          }
-          Some(Ok((bytes, _))) = socket.next() => {
-              if let Ok(msg_in) = RendezvousMessage::parse_from_bytes(&bytes) {
-                 log::trace!("Recv {:?} of test_hbbs", msg_in);
-                 last_time_recv = Instant::now();
-              }
-          }
-        }
-    }
-}
 
 #[inline]
 async fn send_rk_res(

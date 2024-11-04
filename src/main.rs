@@ -9,6 +9,7 @@ fn main() -> ResultType<()> {
     dotenv().ok();  
     let _logger = Logger::try_with_env_or_str("debug")?
         .log_to_stdout()
+        //.log_to_file(flexi_logger::FileSpec::default()) 
         .format(opt_format)
         .write_mode(WriteMode::Async)
         .start()?;

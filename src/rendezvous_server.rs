@@ -54,7 +54,7 @@ type Receiver = mpsc::UnboundedReceiver<Data>;
 static ROTATION_RELAY_SERVER: AtomicUsize = AtomicUsize::new(0);
 type RelayServers = Vec<String>;
 static CHECK_RELAY_TIMEOUT: u64 = 3_000;
-static ALWAYS_USE_RELAY: AtomicBool = AtomicBool::new(false);
+static ALWAYS_USE_RELAY: AtomicBool = AtomicBool::new(true);
 
 #[derive(Clone)]
 struct Inner {
@@ -79,7 +79,6 @@ pub struct RendezvousServer {
 
 enum LoopFailure {
     UdpSocket,
-    Listener2,
     Listener,
 }
 
@@ -87,12 +86,10 @@ impl RendezvousServer {
     #[tokio::main(flavor = "multi_thread")]
     pub async fn start(port: i32, serial: i32, key: &str, rmem: usize) -> ResultType<()> {
         let (key, sk) = Self::get_server_sk(key);
-        let nat_port = port - 1;
         let pm = PeerMap::new().await?;
         log::info!("serial={}", serial);
         let rendezvous_servers = get_servers(&get_arg("rendezvous-servers"), "rendezvous-servers");
         log::info!("Listening on tcp/udp :{}", port);
-        log::info!("Listening on tcp :{}, extra port for NAT test", nat_port);
         let mut socket = create_udp_listener(port, rmem).await?;
         let (tx, mut rx) = mpsc::unbounded_channel::<Data>();
         let software_url = get_arg("software-url");
@@ -132,22 +129,6 @@ impl RendezvousServer {
         std::env::set_var("PORT_FOR_API", port.to_string());
         rs.parse_relay_servers(&get_arg("relay-servers"));
         let mut listener = create_tcp_listener(port).await?;
-        let mut listener2 = create_tcp_listener(nat_port).await?;
-        if std::env::var("ALWAYS_USE_RELAY")
-            .unwrap_or_default()
-            .to_uppercase()
-            == "Y"
-        {
-            ALWAYS_USE_RELAY.store(true, Ordering::SeqCst);
-        }
-        log::info!(
-            "ALWAYS_USE_RELAY={}",
-            if ALWAYS_USE_RELAY.load(Ordering::SeqCst) {
-                "Y"
-            } else {
-                "N"
-            }
-        );
         let main_task = async move {
             loop {
                 log::info!("Start");
@@ -155,7 +136,6 @@ impl RendezvousServer {
                     .io_loop(
                         &mut rx,
                         &mut listener,
-                        &mut listener2,
                         &mut socket,
                         &key,
                     )
@@ -168,10 +148,6 @@ impl RendezvousServer {
                     LoopFailure::Listener => {
                         drop(listener);
                         listener = create_tcp_listener(port).await?;
-                    }
-                    LoopFailure::Listener2 => {
-                        drop(listener2);
-                        listener2 = create_tcp_listener(nat_port).await?;
                     }
                 }
             }
@@ -187,7 +163,6 @@ impl RendezvousServer {
         &mut self,
         rx: &mut Receiver,
         listener: &mut TcpListener,
-        listener2: &mut TcpListener,
         socket: &mut FramedSocket,
         key: &str,
     ) -> LoopFailure {
@@ -224,18 +199,6 @@ impl RendezvousServer {
                         }
                         None => {
                             // unreachable!() ?
-                        }
-                    }
-                }
-                res = listener2.accept() => {
-                    match res {
-                        Ok((stream, addr))  => {
-                            stream.set_nodelay(true).ok();
-                            self.handle_listener2(stream, addr).await;
-                        }
-                        Err(err) => {
-                           log::error!("listener2.accept failed: {}", err);
-                           return LoopFailure::Listener2;
                         }
                     }
                 }
@@ -1026,22 +989,6 @@ impl RendezvousServer {
                             let _ = writeln!(res, "{}: {}s {:?}", id, tm.elapsed().as_secs(), ips,);
                         }
                     }
-                }
-            }
-            Some("always-use-relay" | "aur") => {
-                if let Some(rs) = fds.next() {
-                    if rs.to_uppercase() == "Y" {
-                        ALWAYS_USE_RELAY.store(true, Ordering::SeqCst);
-                    } else {
-                        ALWAYS_USE_RELAY.store(false, Ordering::SeqCst);
-                    }
-                    self.tx.send(Data::RelayServers0(rs.to_owned())).ok();
-                } else {
-                    let _ = writeln!(
-                        res,
-                        "ALWAYS_USE_RELAY: {:?}",
-                        ALWAYS_USE_RELAY.load(Ordering::SeqCst)
-                    );
                 }
             }
             Some("test-geo" | "tg") => {

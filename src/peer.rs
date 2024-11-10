@@ -20,7 +20,6 @@ lazy_static::lazy_static! {
     pub(crate) static ref IP_CHANGES: Mutex<IpChangesMap> = Default::default();
 }
 pub static IP_CHANGE_DUR: u64 = 180;
-pub static IP_CHANGE_DUR_X2: u64 = IP_CHANGE_DUR * 2;
 pub static DAY_SECONDS: u64 = 3600 * 24;
 pub static IP_BLOCK_DUR: u64 = 60;
 

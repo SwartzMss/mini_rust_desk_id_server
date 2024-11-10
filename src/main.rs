@@ -2,10 +2,14 @@ use flexi_logger::*;
 use mini_rust_desk_common::{bail, ResultType};
 use mini_rust_desk_id_server::common::*;
 use mini_rust_desk_id_server::RendezvousServer;
+extern crate dotenvy;
+use dotenvy::dotenv;
 
 fn main() -> ResultType<()> {
-    let _logger = Logger::try_with_env_or_str("info")?
+    dotenv().ok();  
+    let _logger = Logger::try_with_env_or_str("debug")?
         .log_to_stdout()
+        //.log_to_file(flexi_logger::FileSpec::default()) 
         .format(opt_format)
         .write_mode(WriteMode::Async)
         .start()?;

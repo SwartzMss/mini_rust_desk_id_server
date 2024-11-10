@@ -679,7 +679,6 @@ impl RendezvousServer {
                 return Ok((msg_out, None));
             }
             let mut msg_out = RendezvousMessage::new();
-
             let socket_addr = AddrMangle::encode(addr).into();
             ph.nat_type = NatType::SYMMETRIC.into(); // will force relay
             log::info!(

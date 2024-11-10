@@ -1,0 +1,21 @@
+@startuml
+
+participant Client
+participant IDServer
+participant RelayServer
+participant Server
+
+title Relay Server Mode
+
+Client -> IDServer: PunchHoleRequest{id, token, nat_type, licence_key, conn_type, version} (TCP 21116)
+IDServer -> Server: PunchHole{socket_addr, relay_server,nat_type} 
+IDServer <- Server: RelayResponse{socket_addr, uuid,relay_server,relay_server} 
+Server ->RelayServer:RequestRelay{id, uuid,socket_addr,relay_server, secure,licence_key,conn_type,token} 
+IDServer -> IDServer: generate pk
+Client <- IDServer: RelayResponse{socket_addr, uuid,relay_server,relay_server, **pk**} 
+Client ->RelayServer:RequestRelay{id, uuid,socket_addr,relay_server, secure,licence_key,conn_type,token} 
+RelayServer->RelayServer: loop forward msg between Client and Server
+
+
+
+@enduml

@@ -12,17 +12,6 @@ mini_rust_desk_id_server通过提供集合和信号服务，帮助 RustDesk 客�
 - `-p, --port=[NUMBER]`：设置 ID 服务器的监听端口，默认为 `21116`（如果未指定）。
   - 示例：`./mini_rust_desk_id_server --port=21116`
 
-- `-s, --serial=[NUMBER]`：设置配置更新序列号，默认为 `0`。
-  - 示例：`./mini_rust_desk_id_server --serial=100`
-
-- `-R, --rendezvous-servers=[HOSTS]`：指定其他集合服务器，用逗号分隔。
-  - 示例：`./mini_rust_desk_id_server --rendezvous-servers=server1,server2`
-
-- `-r, --relay-servers=[HOST]`：指定默认的中继服务器，用逗号分隔。
-  - 示例：`./mini_rust_desk_id_server --relay-servers=relay1,relay2`
-
 - `-k, --key=[KEY]`：限制只允许提供匹配密钥的客户端访问。
   - 示例：`./mini_rust_desk_id_server --key="your_secret_key"`
 
-- `--mask=[MASK]`：确定连接是否来自局域网，例如 192.168.0.0/16。
-  - 示例：`./mini_rust_desk_id_server  --mask="192.168.0.0/16"`

@@ -7,12 +7,11 @@ use futures_util::{
     sink::SinkExt,
     stream::{SplitSink, StreamExt},
 };
-use ipnetwork::Ipv4Network;
 use mini_rust_desk_common::{
     allow_err,
     bytes_codec::BytesCodec,
     log,
-    protobuf::{Message as _, MessageField},
+    protobuf::Message as _,
     rendezvous_proto::{
         register_pk_response::Result::{TOO_FREQUENT, UUID_MISMATCH},
         *,
@@ -34,7 +33,6 @@ use sodiumoxide::crypto::sign;
 use std::{
     collections::HashMap,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
-    sync::atomic::{AtomicUsize, Ordering},
     sync::Arc,
     time::Instant,
 };
@@ -50,17 +48,11 @@ const REG_TIMEOUT: i32 = 30_000;
 type TcpStreamSink = SplitSink<Framed<TcpStream, BytesCodec>, Bytes>;
 type Sender = mpsc::UnboundedSender<Data>;
 type Receiver = mpsc::UnboundedReceiver<Data>;
-static ROTATION_RELAY_SERVER: AtomicUsize = AtomicUsize::new(0);
 type RelayServers = Vec<String>;
 static CHECK_RELAY_TIMEOUT: u64 = 3_000;
 
 #[derive(Clone)]
 struct Inner {
-    serial: i32,
-    version: String,
-    software_url: String,
-    mask: Option<Ipv4Network>,
-    local_ip: String,
     sk: Option<sign::SecretKey>,
 }
 
@@ -71,7 +63,6 @@ pub struct RendezvousServer {
     tx: Sender,
     relay_servers: Arc<RelayServers>,
     relay_servers0: Arc<RelayServers>,
-    rendezvous_servers: Arc<Vec<String>>,
     inner: Arc<Inner>,
 }
 
@@ -82,49 +73,22 @@ enum LoopFailure {
 
 impl RendezvousServer {
     #[tokio::main(flavor = "multi_thread")]
-    pub async fn start(port: i32, serial: i32, key: &str, rmem: usize) -> ResultType<()> {
+    pub async fn start(port: i32, key: &str, rmem: usize) -> ResultType<()> {
         let (key, sk) = Self::get_server_sk(key);
         let pm = PeerMap::new().await?;
-        log::info!("serial={}", serial);
-        let rendezvous_servers = get_servers(&get_arg("rendezvous-servers"), "rendezvous-servers");
         log::info!("Listening on tcp/udp :{}", port);
         let mut socket = create_udp_listener(port, rmem).await?;
         let (tx, mut rx) = mpsc::unbounded_channel::<Data>();
-        let software_url = get_arg("software-url");
-        let version = mini_rust_desk_common::get_version_from_url(&software_url);
-        if !version.is_empty() {
-            log::info!("software_url: {}, version: {}", software_url, version);
-        }
-        let mask = get_arg("mask").parse().ok();
-        let local_ip = if mask.is_none() {
-            "".to_owned()
-        } else {
-            get_arg_or(
-                "local-ip",
-                local_ip_address::local_ip()
-                    .map(|x| x.to_string())
-                    .unwrap_or_default(),
-            )
-        };
         let mut rs = Self {
             tcp_punch: Arc::new(Mutex::new(HashMap::new())),
             pm,
             tx: tx.clone(),
             relay_servers: Default::default(),
             relay_servers0: Default::default(),
-            rendezvous_servers: Arc::new(rendezvous_servers),
             inner: Arc::new(Inner {
-                serial,
-                version,
-                software_url,
                 sk,
-                mask,
-                local_ip,
             }),
         };
-        log::info!("mask: {:?}", rs.inner.mask);
-        log::info!("local-ip: {:?}", rs.inner.local_ip);
-        std::env::set_var("PORT_FOR_API", port.to_string());
         rs.parse_relay_servers(&get_arg("relay-servers"));
         let mut listener = create_tcp_listener(port).await?;
         let main_task = async move {
@@ -186,7 +150,7 @@ impl RendezvousServer {
                 res = socket.next() => {
                     match res {
                         Some(Ok((bytes, addr))) => {
-                            if let Err(err) = self.handle_udp(&bytes, addr.into(), socket, key).await {
+                            if let Err(err) = self.handle_udp(&bytes, addr.into(), socket).await {
                                 log::error!("udp failure: {}", err);
                                 return LoopFailure::UdpSocket;
                             }
@@ -222,29 +186,18 @@ impl RendezvousServer {
         bytes: &BytesMut,
         addr: SocketAddr,
         socket: &mut FramedSocket,
-        key: &str,
     ) -> ResultType<()> {
         if let Ok(msg_in) = RendezvousMessage::parse_from_bytes(bytes) {
             match msg_in.union {
                 Some(rendezvous_message::Union::RegisterPeer(rp)) => {
-                    log::info!("RegisterPeer: {:?} {:?}", &rp.id, &addr);
                     // B registered
                     if !rp.id.is_empty() {
-                        log::info!("New peer registered: {:?} {:?}", &rp.id, &addr);
+                        log::info!("handle_udp New peer registered: {:?} {:?}", &rp.id, &addr);
                         self.update_addr(rp.id, addr, socket).await?;
-                        if self.inner.serial > rp.serial {
-                            let mut msg_out = RendezvousMessage::new();
-                            msg_out.set_configure_update(ConfigUpdate {
-                                serial: self.inner.serial,
-                                rendezvous_servers: (*self.rendezvous_servers).clone(),
-                                ..Default::default()
-                            });
-                            socket.send(&msg_out, addr).await?;
-                        }
                     }
                 }
                 Some(rendezvous_message::Union::RegisterPk(rk)) => {
-                    log::info!("RegisterPk: {:?} {:?}", &rk.id, &addr);
+                    log::info!("handle_udp RegisterPk: {:?} {:?}", &rk.id, &addr);
                     if rk.uuid.is_empty() || rk.pk.is_empty() {
                         return Ok(());
                     }
@@ -252,9 +205,7 @@ impl RendezvousServer {
                     let ip = addr.ip().to_string();
                     if id.len() < 6 {
                         return send_rk_res(socket, addr, UUID_MISMATCH).await;
-                    } else if !self.check_ip_blocker(&ip, &id).await {
-                        return send_rk_res(socket, addr, TOO_FREQUENT).await;
-                    }
+                    } 
                     let peer = self.pm.get_or(&id).await;
                     let (changed, ip_changed) = {
                         let peer = peer.read().await;
@@ -327,77 +278,10 @@ impl RendezvousServer {
                         result: register_pk_response::Result::OK.into(),
                         ..Default::default()
                     });
-                    log::info!("RegisterPkResponse: result OK");
+                    log::info!("handle_udp RegisterPkResponse: result OK");
                     socket.send(&msg_out, addr).await?
                 }
-                Some(rendezvous_message::Union::PunchHoleRequest(ph)) => {
-                    log::info!(
-                        "handle_udp PunchHoleRequest: {:?} {:?} {:?}",
-                        &ph.id,
-                        &addr,
-                        ph.nat_type
-                    );
-                    if self.pm.is_in_memory(&ph.id).await {
-                        self.handle_udp_punch_hole_request(addr, ph, key).await?;
-                    } else {
-                        // not in memory, fetch from db with spawn in case blocking me
-                        let mut me = self.clone();
-                        let key = key.to_owned();
-                        tokio::spawn(async move {
-                            allow_err!(me.handle_udp_punch_hole_request(addr, ph, &key).await);
-                        });
-                    }
-                }
-                Some(rendezvous_message::Union::PunchHoleSent(phs)) => {
-                    log::info!(
-                        "PunchHoleSent: la.id = {:?} addr = {:?} nat_type = {:?}",
-                        &phs.id,
-                        &addr,
-                        phs.nat_type
-                    );
-                    self.handle_hole_sent(phs, addr, Some(socket)).await?;
-                }
-                Some(rendezvous_message::Union::LocalAddr(la)) => {
-                    log::info!(
-                        "LocalAddr: la.id = {:?} addr = {:?} local_addr = {:?}",
-                        &la.id,
-                        &addr,
-                        la.local_addr
-                    );
-                    self.handle_local_addr(la, addr, Some(socket)).await?;
-                }
-                Some(rendezvous_message::Union::ConfigureUpdate(mut cu)) => {
-                    if try_into_v4(addr).ip().is_loopback() && cu.serial > self.inner.serial {
-                        let mut inner: Inner = (*self.inner).clone();
-                        inner.serial = cu.serial;
-                        self.inner = Arc::new(inner);
-                        self.rendezvous_servers = Arc::new(
-                            cu.rendezvous_servers
-                                .drain(..)
-                                .filter(|x| {
-                                    !x.is_empty()
-                                        && test_if_valid_server(x, "rendezvous-server").is_ok()
-                                })
-                                .collect(),
-                        );
-                        log::info!(
-                            "configure updated: serial={} rendezvous-servers={:?}",
-                            self.inner.serial,
-                            self.rendezvous_servers
-                        );
-                    }
-                }
-                Some(rendezvous_message::Union::SoftwareUpdate(su)) => {
-                    if !self.inner.version.is_empty() && su.url != self.inner.version {
-                        let mut msg_out = RendezvousMessage::new();
-                        msg_out.set_software_update(SoftwareUpdate {
-                            url: self.inner.software_url.clone(),
-                            ..Default::default()
-                        });
-                        socket.send(&msg_out, addr).await?;
-                    }
-                }
-                _ => {}
+                _ => {log::info!("handle_udp Unexpected protobuf msg received: {:?}", msg_in);}
             }
         }
         Ok(())
@@ -426,25 +310,6 @@ impl RendezvousServer {
                     allow_err!(self.handle_tcp_punch_hole_request(addr, ph, key).await);
                     return true;
                 }
-                Some(rendezvous_message::Union::RequestRelay(mut rf)) => {
-                    log::info!(
-                        "handle_tcp RequestRelay: {:?} {:?}",
-                        rf,
-                        &addr,
-                    );
-                    // there maybe several attempt, so sink can be none
-                    if let Some(sink) = sink.take() {
-                        self.tcp_punch.lock().await.insert(try_into_v4(addr), sink);
-                    }
-                    if let Some(peer) = self.pm.get_in_memory(&rf.id).await {
-                        let mut msg_out = RendezvousMessage::new();
-                        rf.socket_addr = AddrMangle::encode(addr).into();
-                        msg_out.set_request_relay(rf);
-                        let peer_addr = peer.read().await.socket_addr;
-                        self.tx.send(Data::Msg(msg_out.into(), peer_addr)).ok();
-                    }
-                    return true;
-                }
                 Some(rendezvous_message::Union::RelayResponse(mut rr)) => {
                     log::info!(
                         "handle_tcp receive RelayResponse: {:?} {:?}",
@@ -459,11 +324,6 @@ impl RendezvousServer {
                         rr.set_pk(pk);
                     }
                     let mut msg_out = RendezvousMessage::new();
-                    if !rr.relay_server.is_empty() {
-                        if rr.relay_server == self.inner.local_ip {
-                            rr.relay_server = self.get_relay_server(addr.ip(), addr_b.ip());
-                        }
-                    }
                     msg_out.set_relay_response(rr);
                     log::info!(
                         "handle_tcp relay_response to : {:?} {:?}",
@@ -471,44 +331,6 @@ impl RendezvousServer {
                         &addr_b,
                     );
                     allow_err!(self.send_to_tcp_sync(msg_out, addr_b).await);
-                }
-                Some(rendezvous_message::Union::PunchHoleSent(phs)) => {
-                    log::info!(
-                        "handle_tcp PunchHoleSent: la.id = {:?} addr = {:?} nat_type = {:?}",
-                        &phs.id,
-                        &addr,
-                        phs.nat_type
-                    );
-                    allow_err!(self.handle_hole_sent(phs, addr, None).await);
-                }
-                Some(rendezvous_message::Union::LocalAddr(la)) => {
-                    log::info!(
-                        "handle_tcp LocalAddr: la.id = {:?} addr = {:?} local_addr = {:?}",
-                        &la.id,
-                        &addr,
-                        la.local_addr
-                    );
-                    allow_err!(self.handle_local_addr(la, addr, None).await);
-                }
-                Some(rendezvous_message::Union::TestNatRequest(tar)) => {
-                    log::info!(
-                        "handle_tcp TestNatRequest: serial = {:?} addr = {:?} ",
-                        &tar.serial,
-                        &addr
-                    );
-                    let mut msg_out = RendezvousMessage::new();
-                    let mut res = TestNatResponse {
-                        port: addr.port() as _,
-                        ..Default::default()
-                    };
-                    if self.inner.serial > tar.serial {
-                        let mut cu = ConfigUpdate::new();
-                        cu.serial = self.inner.serial;
-                        cu.rendezvous_servers = (*self.rendezvous_servers).clone();
-                        res.cu = MessageField::from_option(Some(cu));
-                    }
-                    msg_out.set_test_nat_response(res);
-                    Self::send_to_sink(sink, msg_out).await;
                 }
                 Some(rendezvous_message::Union::RegisterPk(_)) => {
                     let res = register_pk_response::Result::NOT_SUPPORT;
@@ -519,7 +341,7 @@ impl RendezvousServer {
                     });
                     Self::send_to_sink(sink, msg_out).await;
                 }
-                _ => {}
+                _ => {log::info!("handle_tcp Unexpected protobuf msg received: {:?}", msg_in);}
             }
         }
         false
@@ -573,74 +395,6 @@ impl RendezvousServer {
             socket_addr
         );
         socket.send(&msg_out, socket_addr).await
-    }
-
-    #[inline]
-    async fn handle_hole_sent<'a>(
-        &mut self,
-        phs: PunchHoleSent,
-        addr: SocketAddr,
-        socket: Option<&'a mut FramedSocket>,
-    ) -> ResultType<()> {
-        // punch hole sent from B, tell A that B is ready to be connected
-        let addr_a = AddrMangle::decode(&phs.socket_addr);
-        log::debug!(
-            "{} punch hole response to {:?} from {:?}",
-            if socket.is_none() { "TCP" } else { "UDP" },
-            &addr_a,
-            &addr
-        );
-        let mut msg_out = RendezvousMessage::new();
-        let mut p = PunchHoleResponse {
-            socket_addr: AddrMangle::encode(addr).into(),
-            pk: self.get_pk(&phs.version, phs.id).await,
-            relay_server: phs.relay_server.clone(),
-            ..Default::default()
-        };
-        if let Ok(t) = phs.nat_type.enum_value() {
-            p.set_nat_type(t);
-        }
-        msg_out.set_punch_hole_response(p);
-        if let Some(socket) = socket {
-            socket.send(&msg_out, addr_a).await?;
-        } else {
-            self.send_to_tcp(msg_out, addr_a).await;
-        }
-        Ok(())
-    }
-
-    #[inline]
-    async fn handle_local_addr<'a>(
-        &mut self,
-        la: LocalAddr,
-        addr: SocketAddr,
-        socket: Option<&'a mut FramedSocket>,
-    ) -> ResultType<()> {
-        // relay local addrs of B to A
-        let addr_a = AddrMangle::decode(&la.socket_addr);
-        log::info!(
-            "{} local addrs response to {:?} from {:?}",
-            if socket.is_none() { "TCP" } else { "UDP" },
-            &addr_a,
-            &addr
-        );
-        let mut msg_out = RendezvousMessage::new();
-        let mut p = PunchHoleResponse {
-            socket_addr: la.local_addr.clone(),
-            pk: self.get_pk(&la.version, la.id).await,
-            relay_server: la.relay_server.clone(),
-            ..Default::default()
-        };
-        p.set_is_local(true);
-        msg_out.set_punch_hole_response(p);
-        if let Some(socket) = socket {
-            socket.send(&msg_out, addr_a).await?;
-        } else {
-            self.send_to_tcp(msg_out, addr_a).await;
-        }
-        log::info!(
-            "PunchHoleResponse sent out relay_server = {}", la.relay_server);
-        Ok(())
     }
 
     #[inline]
@@ -705,14 +459,6 @@ impl RendezvousServer {
 
 
     #[inline]
-    async fn send_to_tcp(&mut self, msg: RendezvousMessage, addr: SocketAddr) {
-        let mut tcp = self.tcp_punch.lock().await.remove(&try_into_v4(addr));
-        tokio::spawn(async move {
-            Self::send_to_sink(&mut tcp, msg).await;
-        });
-    }
-
-    #[inline]
     async fn send_to_sink(sink: &mut Option<TcpStreamSink>, msg: RendezvousMessage) {
         if let Some(sink) = sink.as_mut() {
             if let Ok(bytes) = msg.write_to_bytes() {
@@ -750,70 +496,12 @@ impl RendezvousServer {
         Ok(())
     }
 
-    #[inline]
-    async fn handle_udp_punch_hole_request(
-        &mut self,
-        addr: SocketAddr,
-        ph: PunchHoleRequest,
-        key: &str,
-    ) -> ResultType<()> {
-        let (msg, to_addr) = self.handle_punch_hole_request(addr, ph, key).await?;
-        self.tx.send(Data::Msg(
-            msg.into(),
-            match to_addr {
-                Some(addr) => addr,
-                None => addr,
-            },
-        ))?;
-        Ok(())
-    }
-
-    async fn check_ip_blocker(&self, ip: &str, id: &str) -> bool {
-        let mut lock = IP_BLOCKER.lock().await;
-        let now = Instant::now();
-        if let Some(old) = lock.get_mut(ip) {
-            let counter = &mut old.0;
-            if counter.1.elapsed().as_secs() > IP_BLOCK_DUR {
-                counter.0 = 0;
-            } else if counter.0 > 30 {
-                return false;
-            }
-            counter.0 += 1;
-            counter.1 = now;
-
-            let counter = &mut old.1;
-            let is_new = counter.0.get(id).is_none();
-            if counter.1.elapsed().as_secs() > DAY_SECONDS {
-                counter.0.clear();
-            } else if counter.0.len() > 300 {
-                return !is_new;
-            }
-            if is_new {
-                counter.0.insert(id.to_owned());
-            }
-            counter.1 = now;
-        } else {
-            lock.insert(ip.to_owned(), ((0, now), (Default::default(), now)));
-        }
-        true
-    }
 
     fn parse_relay_servers(&mut self, relay_servers: &str) {
         let rs = get_servers(relay_servers, "relay-servers");
         self.relay_servers0 = Arc::new(rs);
         self.relay_servers = self.relay_servers0.clone();
     }
-
-    fn get_relay_server(&self, _pa: IpAddr, _pb: IpAddr) -> String {
-        if self.relay_servers.is_empty() {
-            return "".to_owned();
-        } else if self.relay_servers.len() == 1 {
-            return self.relay_servers[0].clone();
-        }
-        let i = ROTATION_RELAY_SERVER.fetch_add(1, Ordering::SeqCst) % self.relay_servers.len();
-        self.relay_servers[i].clone()
-    }
-
 
     async fn handle_listener(&self, stream: TcpStream, addr: SocketAddr, key: &str) {
         log::debug!("Tcp connection from {:?}", addr);

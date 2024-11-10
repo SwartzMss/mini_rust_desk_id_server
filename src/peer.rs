@@ -9,19 +9,15 @@ use mini_rust_desk_common::{
 };
 use bytes::Bytes;
 use serde_derive::{Deserialize, Serialize};
-use std::{collections::HashMap, collections::HashSet, net::SocketAddr, sync::Arc, time::Instant};
+use std::{collections::HashMap, net::SocketAddr, sync::Arc, time::Instant};
 
-type IpBlockMap = HashMap<String, ((u32, Instant), (HashSet<String>, Instant))>;
 type UserStatusMap = HashMap<Vec<u8>, Arc<(Option<Vec<u8>>, bool)>>;
 type IpChangesMap = HashMap<String, (Instant, HashMap<String, i32>)>;
 lazy_static::lazy_static! {
-    pub(crate) static ref IP_BLOCKER: Mutex<IpBlockMap> = Default::default();
     pub(crate) static ref USER_STATUS: RwLock<UserStatusMap> = Default::default();
     pub(crate) static ref IP_CHANGES: Mutex<IpChangesMap> = Default::default();
 }
 pub static IP_CHANGE_DUR: u64 = 180;
-pub static DAY_SECONDS: u64 = 3600 * 24;
-pub static IP_BLOCK_DUR: u64 = 60;
 
 #[derive(Debug, Default, Serialize, Deserialize, Clone)]
 pub(crate) struct PeerInfo {
@@ -170,8 +166,4 @@ impl PeerMap {
         self.map.read().await.get(id).cloned()
     }
 
-    #[inline]
-    pub(crate) async fn is_in_memory(&self, id: &str) -> bool {
-        self.map.read().await.contains_key(id)
-    }
 }

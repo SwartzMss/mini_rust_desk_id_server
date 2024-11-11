@@ -1,8 +1,5 @@
-use crate::common;
-use crate::common::*;
 use crate::peer::*;
 use bytes::{Bytes, BytesMut};
-use futures::future::join_all;
 use futures_util::{
     sink::SinkExt,
     stream::{SplitSink, StreamExt},
@@ -16,13 +13,12 @@ use mini_rust_desk_common::{
         register_pk_response::Result::{TOO_FREQUENT, UUID_MISMATCH},
         *,
     },
-    tcp::{listen_any, FramedStream},
+    tcp::listen_any,
     timeout,
     tokio::{
         self,
         net::{TcpListener, TcpStream},
         sync::{mpsc, Mutex},
-        time::{interval, Duration},
     },
     tokio_util::codec::Framed,
     try_into_v4,
@@ -40,16 +36,12 @@ use std::{
 #[derive(Clone, Debug)]
 enum Data {
     Msg(Box<RendezvousMessage>, SocketAddr),
-    RelayServers0(String),
-    RelayServers(RelayServers),
 }
 
 const REG_TIMEOUT: i32 = 30_000;
 type TcpStreamSink = SplitSink<Framed<TcpStream, BytesCodec>, Bytes>;
 type Sender = mpsc::UnboundedSender<Data>;
 type Receiver = mpsc::UnboundedReceiver<Data>;
-type RelayServers = Vec<String>;
-static CHECK_RELAY_TIMEOUT: u64 = 3_000;
 
 #[derive(Clone)]
 struct Inner {
@@ -61,8 +53,6 @@ pub struct RendezvousServer {
     tcp_punch: Arc<Mutex<HashMap<SocketAddr, TcpStreamSink>>>,
     pm: PeerMap,
     tx: Sender,
-    relay_servers: Arc<RelayServers>,
-    relay_servers0: Arc<RelayServers>,
     inner: Arc<Inner>,
 }
 
@@ -83,13 +73,10 @@ impl RendezvousServer {
             tcp_punch: Arc::new(Mutex::new(HashMap::new())),
             pm,
             tx: tx.clone(),
-            relay_servers: Default::default(),
-            relay_servers0: Default::default(),
             inner: Arc::new(Inner {
                 sk,
             }),
         };
-        rs.parse_relay_servers(&get_arg("relay-servers"));
         let mut listener = create_tcp_listener(port).await?;
         let main_task = async move {
             loop {
@@ -128,23 +115,11 @@ impl RendezvousServer {
         socket: &mut FramedSocket,
         key: &str,
     ) -> LoopFailure {
-        let mut timer_check_relay = interval(Duration::from_millis(CHECK_RELAY_TIMEOUT));
         loop {
             tokio::select! {
-                _ = timer_check_relay.tick() => {
-                    if self.relay_servers0.len() > 1 {
-                        let rs = self.relay_servers0.clone();
-                        let tx = self.tx.clone();
-                        tokio::spawn(async move {
-                            check_relay_servers(rs, tx).await;
-                        });
-                    }
-                }
                 Some(data) = rx.recv() => {
                     match data {
                         Data::Msg(msg, addr) => { allow_err!(socket.send(msg.as_ref(), addr).await); }
-                        Data::RelayServers0(rs) => { self.parse_relay_servers(&rs); }
-                        Data::RelayServers(rs) => { self.relay_servers = Arc::new(rs); }
                     }
                 }
                 res = socket.next() => {
@@ -496,13 +471,6 @@ impl RendezvousServer {
         Ok(())
     }
 
-
-    fn parse_relay_servers(&mut self, relay_servers: &str) {
-        let rs = get_servers(relay_servers, "relay-servers");
-        self.relay_servers0 = Arc::new(rs);
-        self.relay_servers = self.relay_servers0.clone();
-    }
-
     async fn handle_listener(&self, stream: TcpStream, addr: SocketAddr, key: &str) {
         log::debug!("Tcp connection from {:?}", addr);
         let mut rs = self.clone();
@@ -589,32 +557,6 @@ impl RendezvousServer {
 
 }
 
-async fn check_relay_servers(rs0: Arc<RelayServers>, tx: Sender) {
-    let mut futs = Vec::new();
-    let rs = Arc::new(Mutex::new(Vec::new()));
-    for x in rs0.iter() {
-        let mut host = x.to_owned();
-        if !host.contains(':') {
-            host = format!("{}:{}", host, common::RELAY_PORT);
-        }
-        let rs = rs.clone();
-        let x = x.clone();
-        futs.push(tokio::spawn(async move {
-            if FramedStream::new(&host, None, CHECK_RELAY_TIMEOUT)
-                .await
-                .is_ok()
-            {
-                rs.lock().await.push(x);
-            }
-        }));
-    }
-    join_all(futs).await;
-    log::debug!("check_relay_servers");
-    let rs = std::mem::take(&mut *rs.lock().await);
-    if !rs.is_empty() {
-        tx.send(Data::RelayServers(rs)).ok();
-    }
-}
 
 #[inline]
 async fn send_rk_res(

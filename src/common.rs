@@ -67,15 +67,6 @@ pub fn init_args(args: &str, name: &str, about: &str) {
                 .for_each(|(k, v)| std::env::set_var(arg_name(k), v));
         }
     }
-    if let Some(config) = matches.value_of("config") {
-        if let Ok(v) = Ini::load_from_file(config) {
-            if let Some(section) = v.section(None::<String>) {
-                section
-                    .iter()
-                    .for_each(|(k, v)| std::env::set_var(arg_name(k), v));
-            }
-        }
-    }
     for (k, v) in matches.args {
         if let Some(v) = v.vals.first() {
             std::env::set_var(arg_name(k), v.to_string_lossy().to_string());
